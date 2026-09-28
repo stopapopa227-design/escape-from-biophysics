@@ -1,0 +1,65 @@
+[
+  {
+    "file": "beige_wall_001-Diffuse.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/beige_wall_001/beige_wall_001_diff_1k.jpg",
+    "md5": "a99610d7d72ec6fb20ae991ad69b3eb7",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/beige_wall_001"
+  },
+  {
+    "file": "beige_wall_001-nor_gl.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/beige_wall_001/beige_wall_001_nor_gl_1k.jpg",
+    "md5": "2f5fc5b63c425b359089468f4d719ef5",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/beige_wall_001"
+  },
+  {
+    "file": "beige_wall_001-Rough.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/beige_wall_001/beige_wall_001_rough_1k.jpg",
+    "md5": "40d8616d65055c4c984a2807ce933287",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/beige_wall_001"
+  },
+  {
+    "file": "terrazzo_tiles-Diffuse.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/terrazzo_tiles/terrazzo_tiles_diff_1k.jpg",
+    "md5": "12c27a579c2ed49de854b8a86e33647b",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/terrazzo_tiles"
+  },
+  {
+    "file": "terrazzo_tiles-nor_gl.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/terrazzo_tiles/terrazzo_tiles_nor_gl_1k.jpg",
+    "md5": "a5f6d05f27db4151227535bdbc82c048",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/terrazzo_tiles"
+  },
+  {
+    "file": "terrazzo_tiles-Rough.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/terrazzo_tiles/terrazzo_tiles_rough_1k.jpg",
+    "md5": "e34bfd2f4fee1b2b9f310a71588aad17",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/terrazzo_tiles"
+  },
+  {
+    "file": "wood_table_001-Diffuse.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wood_table_001/wood_table_001_diff_1k.jpg",
+    "md5": "56652a7339b16a76afad20d3585f66ea",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/wood_table_001"
+  },
+  {
+    "file": "wood_table_001-nor_gl.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wood_table_001/wood_table_001_nor_gl_1k.jpg",
+    "md5": "6360e09967add8baecaa5ecc55fb5e03",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/wood_table_001"
+  },
+  {
+    "file": "wood_table_001-Rough.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wood_table_001/wood_table_001_rough_1k.jpg",
+    "md5": "05b60bd20a1cc4355c5d73a99b245d44",
+    "license": "CC0",
+    "asset": "https://polyhaven.com/a/wood_table_001"
+  }
+]
