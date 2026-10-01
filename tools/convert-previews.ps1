@@ -1,6 +1,6 @@
 param([string]$Directory = (Join-Path $PSScriptRoot '..\build'))
 Add-Type -AssemblyName System.Drawing
-foreach ($name in @('title','gameplay','pursuit','corridor','portrait','poster','hall','door') + (0..11 | ForEach-Object { "walk-$_" })) {
+foreach ($name in @('title','gameplay','pursuit','corridor','corridor-no-ssao','portrait','poster','hall','door','report','reach','reach-side','locker','locker-hidden','locker-opening') + (0..11 | ForEach-Object { "walk-$_" })) {
     $source = Join-Path $Directory "$name.tga"
     if (-not (Test-Path -LiteralPath $source)) { continue }
     $bytes = [IO.File]::ReadAllBytes($source)

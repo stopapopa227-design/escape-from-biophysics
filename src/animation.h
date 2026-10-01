@@ -1,16 +1,21 @@
 #pragma once
-struct ProfessorAnimation { float phase=0,blend=0,facing=0,headTurn=0,time=0; } professorAnimation;
+constexpr float ProfessorWalkStride=1.20f,ProfessorRunStride=1.75f;
+struct ProfessorAnimation { float phase=0,blend=0,facing=0,headTurn=0,time=0,runBlend=0,reach=0; } professorAnimation;
 float smoothStep(float low,float high,float value){float t=std::clamp((value-low)/(high-low),0.0f,1.0f);return t*t*(3-2*t);}
 V3 rotateX(V3 v,float angle){float c=std::cos(angle),s=std::sin(angle);return {v.x,c*v.y-s*v.z,s*v.y+c*v.z};}
 V3 rotateY(V3 v,float angle){float c=std::cos(angle),s=std::sin(angle);return {c*v.x+s*v.z,v.y,-s*v.x+c*v.z};}
 V3 rotateXC(V3 v,float c,float s){return {v.x,c*v.y-s*v.z,s*v.y+c*v.z};}
 V3 rotateYC(V3 v,float c,float s){return {c*v.x+s*v.z,v.y,-s*v.x+c*v.z};}
 float angleDelta(float a,float b){return std::atan2(std::sin(a-b),std::cos(a-b));}
-void advanceProfessor(ProfessorAnimation& a,V3 before,V3 after,V3 targetPosition,float dt,bool alerting) {
+void advanceProfessor(ProfessorAnimation& a,V3 before,V3 after,V3 targetPosition,float dt,bool alerting,bool targetVisible=true) {
     if(dt<=0)return;
     V3 motion=after-before;float distance=length(motion),speed=distance/dt;
-    a.blend+=(std::clamp(speed/1.35f,0.0f,1.0f)-a.blend)*(1-std::exp(-dt*10));
-    a.phase+=distance*(2*PI/1.04f);a.time+=dt;
+    a.blend+=(std::clamp(speed/.65f,0.0f,1.0f)-a.blend)*(1-std::exp(-dt*8));
+    a.runBlend+=(smoothStep(1.70f,3.10f,speed)-a.runBlend)*(1-std::exp(-dt*6));
+    float stride=ProfessorWalkStride+(ProfessorRunStride-ProfessorWalkStride)*a.runBlend;
+    a.phase=std::fmod(a.phase+distance*(2*PI/stride),2*PI);a.time+=dt;
+    float reach=alerting&&targetVisible?1-smoothStep(.85f,2.10f,length(targetPosition-after)):0;
+    a.reach+=(reach-a.reach)*(1-std::exp(-dt*12));
     if(distance>0.0001f){float desired=std::atan2(-motion.x,-motion.z);a.facing+=std::clamp(angleDelta(desired,a.facing),-dt*4.5f,dt*4.5f);}
     float look=alerting?std::clamp(angleDelta(std::atan2(-(targetPosition.x-after.x),-(targetPosition.z-after.z)),a.facing),-0.40f,0.40f):0.04f*std::sin(a.time*0.8f);
     a.headTurn+=(look-a.headTurn)*(1-std::exp(-dt*6));

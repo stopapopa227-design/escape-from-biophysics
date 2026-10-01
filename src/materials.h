@@ -7,9 +7,14 @@ uniform vec3 uEye; uniform vec3 uForward;
 uniform vec3 uTeacher;
 uniform sampler2DArray uAlbedoMaps,uNormalMaps,uRoughMaps;
 uniform sampler2D uEmblem;
+uniform sampler2DArray uReportPages;
+uniform sampler2DArray uPosterPages;
 uniform vec3 uLights[12]; uniform int uLightCount;
 uniform int uUI; uniform float uLamp;
-out vec4 frag;
+uniform mat4 uView;
+layout(location=0) out vec4 frag;
+layout(location=1) out vec4 geometryNormal;
+layout(location=2) out vec4 ambientLight;
 float hash(vec3 p){p=fract(p*0.1031);p+=dot(p,p.yzx+33.33);return fract((p.x+p.y)*p.z);}
 float noise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
 return mix(mix(mix(hash(i),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
@@ -21,7 +26,8 @@ vec3 bump(vec3 n,float h,float strength){
  return normalize(abs(det)*n-strength*grad);
 }
 void main(){
- if(uUI==1){frag=vec4(color,1);return;}
+ if(uUI==1){frag=vec4(color,1);geometryNormal=vec4(0);ambientLight=vec4(0);return;}
+ geometryNormal=vec4(normalize(mat3(uView)*normalize(normal)),1);
  vec3 n=normalize(normal),albedo=color,p=tex;
  float rough=0.72,metal=0.,height=0.,ao=1.;
  float grain=noise(p*180.),coarse=fbm(p*3.1);
@@ -51,9 +57,20 @@ void main(){
  }
  if(material==4){albedo*=0.92+0.1*grain;rough=0.93;height=grain*0.045;}
  if(material==5){
-   float weave=sin(p.x*1700.)*sin(p.y*1700.)*0.5+0.5;
-   float fade=1.-smoothstep(0.001,0.005,length(fwidth(p)));
-   albedo*=0.91+0.10*coarse+0.035*weave*fade;height=(weave*0.012*fade+grain*0.015);rough=0.85;
+   // Charcoal wool: crossing threads, twill direction and fibre cells.
+   float warp=fbm(p*vec3(18.,42.,18.));
+   float threadU=0.5+0.5*sin(p.x*920.+warp*4.2);
+   float threadV=0.5+0.5*sin(p.z*920.-warp*3.7);
+   float twill=0.5+0.5*sin((p.x+p.z)*430.+fbm(p*26.)*5.0);
+   float fibre=smoothstep(.38,.76,noise(p*310.+warp));
+   float weave=threadU*threadV;
+   float foldNoise=fbm(p*vec3(5.,12.,5.));
+   float foldRidge=0.5+0.5*sin(p.x*9.+p.z*11.+foldNoise*5.0);
+   float foldMask=smoothstep(.48,.78,noise(p*vec3(7.,18.,7.)));
+   float folds=foldRidge*foldMask;
+   albedo*=0.86+0.12*coarse+0.045*weave+0.035*twill+0.035*(folds-.5);
+   albedo*=1.-0.035*fibre;
+   height=weave*0.010+twill*0.006+fibre*0.008+folds*0.032+grain*0.010;rough=0.78+0.08*(1.-weave);
  }
  if(material==6||material==14){
    albedo*=0.94+0.1*noise(p*96.);albedo+=vec3(0.027,-0.005,-0.006)*(coarse-0.3);
@@ -73,7 +90,9 @@ void main(){
    albedo*=0.88+0.20*coarse;albedo=mix(albedo,albedo*0.64,vein*0.30);
    height=noise(p*55.)*0.008;rough=0.25;
  }
- if(material==15){rough=0.9;height=0.;}
+ if(material==15){albedo*=.985+.015*grain;rough=0.94;height=grain*.0015;}
+ if(material==16){albedo=texture(uReportPages,p).rgb;rough=.94;height=grain*.0015;}
+ if(material==17){albedo=texture(uPosterPages,p).rgb;rough=.94;height=0.;}
  if(material==12){albedo=texture(uEmblem,p.xy).rgb;rough=0.9;height=0.;}
  n=bump(n,height,0.003);
  if(material==1||material==2||material==3||material==10){
@@ -118,10 +137,8 @@ void main(){
    ao*=1.-0.58*exp(-dot(q,q)*5.5);
  }
  base*=ao;
- base=base/(vec3(1.)+base*0.55);
- if(max(color.r,max(color.g,color.b))>1.)base=color;
- float fog=1.-exp(-dist*dist*0.00050);
- base=mix(base,vec3(0.045,0.045,0.041),fog);
- frag=vec4(pow(max(base,vec3(0)),vec3(0.87)),1);
+ bool emissive=max(color.r,max(color.g,color.b))>1.;
+ ambientLight=vec4(albedo*vec3(.15,.15,.14)*ao*ao,emissive?1.:0.);
+ frag=vec4(emissive?color:base,1);
 }
 )GLSL";

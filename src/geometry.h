@@ -2,7 +2,7 @@
 
 // Procedural geometry building blocks: primitive -> surface -> transform -> join.
 // All texture coordinates stay in object space when animated.
-enum Surface { Plain, Paint, Plaster, Stone, Ceiling, Cloth, Skin, Metal, Hair, Leather, Wood, Marble, Emblem, Eye, Eyelid, Paper };
+enum Surface { Plain, Paint, Plaster, Stone, Ceiling, Cloth, Skin, Metal, Hair, Leather, Wood, Marble, Emblem, Eye, Eyelid, Paper, Report, Poster };
 void surface(Mesh& m,size_t start,int material) {
     for(size_t i=start;i<m.size();++i) m[i].material=float(material);
 }

@@ -17,7 +17,7 @@ void findWallRuns() {
 void placeKit(Mesh& result,const Mesh& kit,Tile location,Tile d) {
     V3 p=center(location);float angle=d.z==-1?0:d.z==1?PI:d.x==1?-PI/2:PI/2;
     float c=std::cos(angle),s=std::sin(angle);
-    for(Vertex v:kit){V3 q=v.p,n=v.n;v.p=p+V3{c*q.x+s*q.z,q.y,-s*q.x+c*q.z};v.n={c*n.x+s*n.z,n.y,-s*n.x+c*n.z};if(v.material!=12)v.tex=v.p;result.push_back(v);}
+    for(Vertex v:kit){V3 q=v.p,n=v.n;v.p=p+V3{c*q.x+s*q.z,q.y,-s*q.x+c*q.z};v.n={c*n.x+s*n.z,n.y,-s*n.x+c*n.z};if(v.material!=Emblem&&v.material!=Report&&v.material!=Poster)v.tex=v.p;result.push_back(v);}
 }
 // Offset the contour at each corner with a miter. Adjacent runs meet exactly;
 // unlike expanded cubes they never create coplanar overlapping moldings.
@@ -90,19 +90,9 @@ Mesh posterKit(size_t variant) {
     Mesh kit;
     materialBox(kit,{0,1.94f,-1.565f},{0.59f,0.70f,0.028f},{0.26f,0.16f,0.07f},Wood);
     materialBox(kit,{0,1.94f,-1.528f},{0.545f,0.655f,0.007f},{1,1,1},Paper);
-    emblemQuad(kit,{0,2.34f,-1.518f},0.34f,0.276f);
-    auto centered=[&](const std::wstring& text,float y,float preferredSize,V3 color){
-        if(text.empty())return;
-        float units=float(text.size()*6-1);
-        float size=std::min(preferredSize,.94f/units);
-        russianSign(kit,{-(units-1)*size/2,y,-1.516f},text,size,color);
-    };
-    centered(L"КАФЕДРА",2.10f,.014f,{.045f,.20f,.30f});
-    const auto& lines=posterDepartments[variant%posterDepartments.size()];
-    size_t count=0;for(auto line:lines)if(*line)++count;
-    float top=1.78f+float(count-1)*.085f;
-    for(size_t i=0;i<count;++i)centered(lines[i],top-float(i)*.17f,.012f,{.06f,.17f,.25f});
-    centered(L"ФИЗИЧЕСКИЙ ФАКУЛЬТЕТ МГУ",1.40f,.0065f,{.20f,.26f,.26f});
+    size_t first=kit.size();
+    quad(kit,{-.545f,1.285f,-1.519f},{.545f,1.285f,-1.519f},{.545f,2.595f,-1.519f},{-.545f,2.595f,-1.519f},{0,0,1},{1,1,1});
+    for(size_t i=first;i<kit.size();++i){auto& v=kit[i];v.material=Poster;v.tex={(v.p.x+.545f)/1.09f,(2.595f-v.p.y)/1.31f,float(variant%12)};}
     return kit;
 }
 
@@ -130,6 +120,23 @@ Mesh classroomKit(int number) {
     materialBox(kit,{0,2.94f,-1.56f},{0.29f,0.115f,0.033f},{0.11f,0.09f,0.055f},Wood);
     wallText(kit,{-0.12f,2.995f,-1.520f},std::to_string(number),0.017f,{0.84f,0.76f,0.53f});return kit;
 }
+Mesh lockerKit(float opening){
+    Mesh kit,door;V3 steel{.28f,.34f,.33f},edge{.13f,.18f,.18f};
+    materialBox(kit,{0,1.13f,-1.53f},{.46f,1.08f,.018f},edge,Metal);
+    for(float x:{-.45f,.45f})materialBox(kit,{x,1.13f,-1.20f},{.018f,1.08f,.33f},steel,Metal);
+    for(float y:{.07f,2.20f})materialBox(kit,{0,y,-1.20f},{.46f,.025f,.34f},steel,Metal);
+    // Door ventilation leaves a narrow view from inside the closed locker.
+    materialBox(door,{0,.79f,-.856f},{.432f,.69f,.018f},steel,Metal);
+    materialBox(door,{0,1.99f,-.856f},{.432f,.18f,.018f},steel,Metal);
+    for(float x:{-.365f,.365f})materialBox(door,{x,1.645f,-.856f},{.067f,.165f,.018f},steel,Metal);
+    for(int i=0;i<11;++i)materialBox(door,{0,1.49f+i*.030f,-.85f},{.30f,.008f,.025f},edge,Metal);
+    materialBox(door,{.31f,1.10f,-.815f},{.025f,.105f,.018f},edge,Metal);
+    tube(door,{.31f,1.03f,-.78f},{.31f,1.17f,-.78f},.012f,.012f,{.50f,.51f,.49f},Metal,10);
+    for(float y:{.34f,1.98f})tube(kit,{-.455f,y-.045f,-.85f},{-.455f,y+.045f,-.85f},.025f,.025f,edge,Metal,10);
+    V3 hinge{-.45f,0,-.85f};float angle=-opening*1.85f,c=std::cos(angle),s=std::sin(angle);
+    for(Vertex v:door){V3 p=v.p-hinge,n=v.n;v.p=hinge+V3{c*p.x+s*p.z,p.y,-s*p.x+c*p.z};v.n={c*n.x+s*n.z,n.y,-s*n.x+c*n.z};v.tex=v.p;kit.push_back(v);}
+    return kit;
+}
 void buildWorld(bool upload=true) {
     staticMesh.clear();staticMesh.reserve(200000);ceilingLights.clear();wallDecorations.clear();findWallRuns();
     // One continuous surface removes all per-cell floor and ceiling seams.
@@ -154,12 +161,13 @@ void buildWorld(bool upload=true) {
         for(int i=0;i<run.count;++i){
             Tile tileAt{run.start.x+run.along.x*i,run.start.z+run.along.z*i};
             bool reportHere=false;for(const Note& note:notes)if(note.tile==tileAt&&noteWall(note.tile)==run.out)reportHere=true;
+            bool lockerHere=false;for(const auto& l:lockers)if(l.tile==tileAt&&l.wall==run.out)lockerHere=true;
             int key=tileAt.x*17+tileAt.z*31+run.out.x*3+run.out.z*7;
             int kind=(key%7+7)%7;
             bool exitDoor=tileAt==exitTile&&run.out==Tile{0,-1};
-            bool door=exitDoor||(!reportHere&&!(tileAt==exitTile)&&(kind==2||kind==5));
+            bool door=exitDoor||(!reportHere&&!lockerHere&&!(tileAt==exitTile)&&(kind==2||kind==5));
             placeKit(staticMesh,wallPanelKit(door),tileAt,run.out);
-            if(tileAt==exitTile||reportHere)continue;
+            if(tileAt==exitTile||reportHere||lockerHere)continue;
             Mesh kit;
             if(kind==0||kind==4){kit=posterKit(posterIndex++);kind=1;}
             else if(door){kit=classroomKit(300+tileAt.x+tileAt.z*2);kind=2;}

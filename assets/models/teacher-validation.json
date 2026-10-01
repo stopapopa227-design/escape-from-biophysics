@@ -1,0 +1,20 @@
+{
+  "vertices": 166110,
+  "polygons": 188229,
+  "bones": 20,
+  "max_weights": 3,
+  "clips": [
+    "Idle",
+    "Walk",
+    "Run",
+    "Catch"
+  ],
+  "front": "-Y",
+  "up": "Z",
+  "units": "metres",
+  "blender": "4.0.1",
+  "runtime_asset": "teacher_runtime.bin",
+  "runtime_vertices": 948342,
+  "runtime_clips": 4,
+  "source": "manual teacher.blend"
+}

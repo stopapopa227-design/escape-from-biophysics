@@ -23,6 +23,7 @@
 // Only the OpenGL 3.3 entry points used by this project. No external loader.
 using GLsizeiptr = ptrdiff_t;
 #define GL_ARRAY_BUFFER 0x8892
+#define GL_STATIC_DRAW 0x88E4
 #define GL_DYNAMIC_DRAW 0x88E8
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
@@ -64,6 +65,12 @@ GLFN(void, glActiveTexture, GLenum);
 GLFN(void, glTexImage3D, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
 GLFN(void, glTexSubImage3D, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void*);
 GLFN(void, glGenerateMipmap, GLenum);
+GLFN(void, glGenFramebuffers, GLsizei, GLuint*);
+GLFN(void, glBindFramebuffer, GLenum, GLuint);
+GLFN(void, glDeleteFramebuffers, GLsizei, const GLuint*);
+GLFN(void, glFramebufferTexture2D, GLenum, GLenum, GLenum, GLuint, GLint);
+GLFN(GLenum, glCheckFramebufferStatus, GLenum);
+GLFN(void, glDrawBuffers, GLsizei, const GLenum*);
 
 template<class T> void loadGL(T& out, const char* name) {
     PROC p = wglGetProcAddress(name);
@@ -82,6 +89,8 @@ void loadOpenGL() {
     LOAD(glGetProgramInfoLog); LOAD(glDeleteShader); LOAD(glDeleteProgram); LOAD(glUseProgram);
     LOAD(glGetUniformLocation); LOAD(glUniformMatrix4fv); LOAD(glUniform3f); LOAD(glUniform1f); LOAD(glUniform1i);
     LOAD(glActiveTexture);LOAD(glTexImage3D);LOAD(glTexSubImage3D);LOAD(glGenerateMipmap);
+    LOAD(glGenFramebuffers);LOAD(glBindFramebuffer);LOAD(glDeleteFramebuffers);
+    LOAD(glFramebufferTexture2D);LOAD(glCheckFramebufferStatus);LOAD(glDrawBuffers);
 #undef LOAD
 }
 
@@ -117,8 +126,94 @@ Mat lookAt(V3 eye,V3 dir) {
     a.m[2]=-f.x; a.m[6]=-f.y; a.m[10]=-f.z;
     a.m[12]=-dot(s,eye); a.m[13]=-dot(u,eye); a.m[14]=dot(f,eye); return a;
 }
-struct Vertex { V3 p,n,c; V3 tex; float material=0; };
+struct Vertex {
+    V3 p,n,c; V3 tex; float material=0;
+    std::array<uint8_t,4> bones{};
+    std::array<float,4> weights{};
+};
 using Mesh = std::vector<Vertex>;
+
+struct SkinMatrix {
+    float m[12]{};
+    V3 apply(V3 p) const {
+        return {m[0]*p.x+m[1]*p.y+m[2]*p.z+m[3],
+                m[4]*p.x+m[5]*p.y+m[6]*p.z+m[7],
+                m[8]*p.x+m[9]*p.y+m[10]*p.z+m[11]};
+    }
+    V3 applyNormal(V3 n) const {
+        return normalized({m[0]*n.x+m[1]*n.y+m[2]*n.z,
+                           m[4]*n.x+m[5]*n.y+m[6]*n.z,
+                           m[8]*n.x+m[9]*n.y+m[10]*n.z});
+    }
+};
+struct RuntimeVertex {
+    V3 p,n,c,tex;
+    std::array<uint8_t,4> bones{};
+    std::array<float,4> weights{};
+    uint32_t material=0;
+};
+struct RuntimeClip {
+    std::string name;
+    uint32_t frames=0;
+    float fps=30;
+    std::vector<SkinMatrix> matrices;
+};
+struct RuntimeProfessor {
+    uint32_t boneCount=0;
+    std::vector<RuntimeVertex> vertices;
+    Mesh mesh;
+    std::vector<RuntimeClip> clips;
+    bool loaded=false;
+};
+RuntimeProfessor runtimeProfessor;
+#include "rig_animation.h"
+
+template<class T> bool readBinary(std::ifstream& in,T& value) {
+    return bool(in.read(reinterpret_cast<char*>(&value),std::streamsize(sizeof(T))));
+}
+bool loadRuntimeProfessor() {
+    const std::array<std::filesystem::path,3> candidates={
+        std::filesystem::path("assets/models/teacher_runtime.bin"),
+        std::filesystem::path("../assets/models/teacher_runtime.bin"),
+        std::filesystem::path("../../assets/models/teacher_runtime.bin")};
+    std::ifstream in;
+    for(const auto& candidate:candidates) if(std::filesystem::exists(candidate)) {
+        in.clear();in.open(candidate,std::ios::binary); if(in) break;
+    }
+    if(!in) return false;
+    char magic[4]{};uint32_t version=0,vertexCount=0,boneCount=0,clipCount=0;
+    if(!in.read(magic,4)||!readBinary(in,version)||!readBinary(in,vertexCount)||
+       !readBinary(in,boneCount)||!readBinary(in,clipCount)) return false;
+    if(std::string(magic,4)!="TCH1"||version!=1||vertexCount==0||vertexCount>1000000||
+       boneCount==0||boneCount>32||clipCount==0||clipCount>8) return false;
+    RuntimeProfessor loaded;loaded.boneCount=boneCount;loaded.vertices.resize(vertexCount);
+    for(auto& vertex:loaded.vertices) {
+        if(!in.read(reinterpret_cast<char*>(&vertex.p),sizeof(V3))||
+           !in.read(reinterpret_cast<char*>(&vertex.n),sizeof(V3))||
+           !in.read(reinterpret_cast<char*>(&vertex.c),sizeof(V3))||
+           !in.read(reinterpret_cast<char*>(&vertex.tex),sizeof(V3))||
+           !in.read(reinterpret_cast<char*>(vertex.bones.data()),4)||
+           !in.read(reinterpret_cast<char*>(vertex.weights.data()),sizeof(float)*4)||
+           !readBinary(in,vertex.material)) return false;
+    }
+    loaded.clips.reserve(clipCount);
+    for(uint32_t clipIndex=0;clipIndex<clipCount;++clipIndex) {
+        char name[16]{};uint32_t frames=0;float fps=0;
+        if(!in.read(name,sizeof(name))||!readBinary(in,frames)||!readBinary(in,fps)||
+           frames==0||frames>600||fps<=0) return false;
+        const size_t matrixCount=size_t(frames)*boneCount;
+        if(matrixCount>50000) return false;
+        size_t nameLength=0;while(nameLength<sizeof(name)&&name[nameLength])++nameLength;
+        RuntimeClip clip;clip.name=std::string(name,nameLength);clip.frames=frames;clip.fps=fps;clip.matrices.resize(matrixCount);
+        for(auto& matrix:clip.matrices) if(!in.read(reinterpret_cast<char*>(matrix.m),sizeof(matrix.m))) return false;
+        loaded.clips.push_back(std::move(clip));
+    }
+    loaded.mesh.reserve(loaded.vertices.size());
+    for(const auto& source:loaded.vertices)
+        loaded.mesh.push_back({source.p,source.n,source.c,source.tex,float(source.material),source.bones,source.weights});
+    loaded.loaded=true;runtimeProfessor=std::move(loaded);
+    return true;
+}
 void quad(Mesh& m,V3 a,V3 b,V3 c,V3 d,V3 n,V3 color) {
     for(V3 p : {a,b,c,a,c,d}) m.push_back({p,n,color,p,0});
 }
@@ -171,6 +266,7 @@ Tile exitTile{1,1};
 V3 player,teacher;
 Tile noteWall(Tile t){for(Tile d:dirs)if(!walkable(t.x+d.x,t.z+d.z))return d;return {0,-1};}
 V3 notePosition(const Note& n){Tile d=noteWall(n.tile);return center(n.tile)+V3{float(d.x)*1.43f,0,float(d.z)*1.43f};}
+#include "lockers.h"
 void makeMap(uint32_t seed) {
     rng.seed(seed); for(auto& r:grid) r.fill(1); for(auto& r:explored) r.fill(false);
     // A faculty floor has wings and cross-corridors, not random isolated wall cubes.
@@ -198,9 +294,11 @@ void makeMap(uint32_t seed) {
         }
         notes.push_back({best,false}); selected.push_back(best);
     }
+    generateLockers();
 }
 bool canStand(V3 p) {
     constexpr float r=0.25f;
+    for(const auto& l:lockers)if(insideLocker(p,l,r))return false;
     for(float x:{-r,r}) for(float z:{-r,r}) {
         Tile t=tile(p+V3{x,0,z}); if(!walkable(t.x,t.z)) return false;
     }
@@ -215,6 +313,9 @@ void movePlayer(V3 delta) {
     }
 }
 bool lineOfSight(V3 a,V3 b) {
+    int samples=std::max(1,int(distance2D(a,b)/.08f));
+    for(int i=0;i<=samples;++i)for(const auto& l:lockers)
+        if(insideLocker(a+(b-a)*(float(i)/samples),l))return false;
     // Exact segment/slab intersections also detect a very short cut across a corner.
     Tile lo=tile({std::min(a.x,b.x),0,std::min(a.z,b.z)});
     Tile hi=tile({std::max(a.x,b.x),0,std::max(a.z,b.z)});
@@ -268,8 +369,10 @@ Tile target{};
 std::vector<Tile> teacherPath;
 Mesh staticMesh;
 GLuint vao=0,vbo=0,program=0;
+GLuint runtimeVao=0,runtimeVbo=0;
 GLuint worldVao=0,worldVbo=0;
-GLint locMatrix,locEye,locForward,locUI,locLamp,locTeacher;
+GLint locMatrix,locView,locEye,locForward,locUI,locLamp,locTeacher,locSkinEnabled,locSkinOffset;
+GLint locBones[32]{};
 GLint locLights[12]{},locLightCount;
 void captureMouse(bool value) {
     if(captured==value) return;
@@ -361,10 +464,14 @@ GLuint compileShader(GLenum kind,const char* source) {
     if(!ok) { char log[4096]{};glGetShaderInfoLog(s,sizeof(log),nullptr,log);glDeleteShader(s);throw std::runtime_error(log); }
     return s;
 }
+#include "ssao.h"
+
 void vertexLayout() {
     for(GLuint i=0;i<3;++i) { glEnableVertexAttribArray(i);glVertexAttribPointer(i,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(size_t(i)*sizeof(V3))); }
     glEnableVertexAttribArray(3);glVertexAttribPointer(3,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(offsetof(Vertex,tex)));
     glEnableVertexAttribArray(4);glVertexAttribPointer(4,1,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(offsetof(Vertex,material)));
+    glEnableVertexAttribArray(5);glVertexAttribPointer(5,4,GL_UNSIGNED_BYTE,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(offsetof(Vertex,bones)));
+    glEnableVertexAttribArray(6);glVertexAttribPointer(6,4,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(offsetof(Vertex,weights)));
 }
 void initRenderer() {
     const char* vs=R"(#version 330 core
@@ -373,10 +480,27 @@ layout(location=1) in vec3 aNormal;
 layout(location=2) in vec3 aColor;
 layout(location=3) in vec3 aTex;
 layout(location=4) in float aMaterial;
+layout(location=5) in vec4 aBones;
+layout(location=6) in vec4 aWeights;
 uniform mat4 uMatrix;
+uniform int uSkinEnabled;
+uniform vec3 uSkinOffset;
+uniform mat4 uBones[32];
 out vec3 world; out vec3 normal; out vec3 color; out vec3 tex;
 flat out int material;
-void main(){ world=aPos; normal=aNormal; color=aColor; tex=aTex; material=int(aMaterial+0.5); gl_Position=uMatrix*vec4(aPos,1.0); }
+void main(){
+    vec3 position=aPos; vec3 surfaceNormal=aNormal;
+    if(uSkinEnabled!=0){
+        vec4 skinned=vec4(0.0);vec3 skinnedNormal=vec3(0.0);
+        for(int i=0;i<4;++i){
+            int bone=int(aBones[i]+0.5);float weight=aWeights[i];
+            if(weight>0.0){ skinned+=(uBones[bone]*vec4(aPos,1.0))*weight; skinnedNormal+=(mat3(uBones[bone])*aNormal)*weight; }
+        }
+        position=skinned.xyz+uSkinOffset;surfaceNormal=normalize(skinnedNormal);
+    }
+    world=position; normal=surfaceNormal; color=aColor; tex=aTex; material=int(aMaterial+0.5);
+    gl_Position=uMatrix*vec4(position,1.0);
+}
 )";
     const char* fs=materialShader;
     GLuint v=compileShader(GL_VERTEX_SHADER,vs),f=compileShader(GL_FRAGMENT_SHADER,fs);
@@ -385,14 +509,23 @@ void main(){ world=aPos; normal=aNormal; color=aColor; tex=aTex; material=int(aM
     GLint ok;glGetProgramiv(program,GL_LINK_STATUS,&ok);
     if(!ok) { char log[4096]{};glGetProgramInfoLog(program,sizeof(log),nullptr,log);throw std::runtime_error(log); }
     locMatrix=glGetUniformLocation(program,"uMatrix");locEye=glGetUniformLocation(program,"uEye");
+    locView=glGetUniformLocation(program,"uView");
     locForward=glGetUniformLocation(program,"uForward");locUI=glGetUniformLocation(program,"uUI");locLamp=glGetUniformLocation(program,"uLamp");
     locTeacher=glGetUniformLocation(program,"uTeacher");
+    locSkinEnabled=glGetUniformLocation(program,"uSkinEnabled");locSkinOffset=glGetUniformLocation(program,"uSkinOffset");
+    for(uint32_t i=0;i<32;++i)locBones[i]=glGetUniformLocation(program,("uBones["+std::to_string(i)+"]").c_str());
     locLightCount=glGetUniformLocation(program,"uLightCount");for(int i=0;i<12;++i)locLights[i]=glGetUniformLocation(program,("uLights["+std::to_string(i)+"]").c_str());
     glUseProgram(program);loadMaterials(program);
     glGenVertexArrays(1,&vao);glBindVertexArray(vao);glGenBuffers(1,&vbo);glBindBuffer(GL_ARRAY_BUFFER,vbo);
     vertexLayout();
     glGenVertexArrays(1,&worldVao);glBindVertexArray(worldVao);glGenBuffers(1,&worldVbo);glBindBuffer(GL_ARRAY_BUFFER,worldVbo);vertexLayout();
+    if(runtimeProfessor.loaded){
+        glGenVertexArrays(1,&runtimeVao);glBindVertexArray(runtimeVao);glGenBuffers(1,&runtimeVbo);glBindBuffer(GL_ARRAY_BUFFER,runtimeVbo);
+        vertexLayout();glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(runtimeProfessor.mesh.size()*sizeof(Vertex)),runtimeProfessor.mesh.data(),GL_STATIC_DRAW);
+    }
     glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glUniform1i(locSkinEnabled,0);glUniform3f(locSkinOffset,0,0,0);
+    initSSAO();
 }
 void drawMesh(const Mesh& m) {
     if(m.empty()) return;
@@ -448,6 +581,32 @@ void restart(bool newSeed) {
     mode=Mode::Playing;captureMouse(true);
 }
 V3 forward() { return {std::sin(yaw)*std::cos(pitch),std::sin(pitch),-std::cos(yaw)*std::cos(pitch)}; }
+bool professorSees(V3 p){
+    V3 delta=p-teacher;delta.y=0;float d=length(delta);
+    V3 gaze{-std::sin(professorAnimation.facing),0,-std::cos(professorAnimation.facing)};
+    return d<19&&lineOfSight(teacher,p)&&(d<.001f||dot(normalized(delta),gaze)>.5f);
+}
+int nearbyLocker(){
+    if(hiddenLocker>=0)return hiddenLocker;
+    for(size_t i=0;i<lockers.size();++i){const auto& l=lockers[i];
+        if(distance2D(player,lockerApproach(l))<1.1f&&dot(forward(),lockerOut(l))>.35f)return int(i);
+    }
+    return -1;
+}
+void useLocker(){
+    if(hiddenLocker>=0){
+        player=lockerApproach(lockers[hiddenLocker]);lockers[hiddenLocker].door=1;hiddenLocker=-1;
+        return;
+    }
+    int index=nearbyLocker();if(index<0)return;
+    // Pursuit memory is not evidence of seeing the player enter this locker.
+    bool spotted=professorSees(player);
+    hiddenLocker=index;player=lockerPosition(lockers[index]);
+    V3 out=lockerOut(lockers[index]);yaw=std::atan2(-out.x,out.z);pitch=0;
+    sprinting=false;lockers[index].door=.65f;
+    if(spotted){knownLocker=index;target=lockers[index].tile;alert=7;aiTick=0;teacherPath.clear();}
+    notice=3;noticeText=spotted?"HE SAW YOU HIDE. GET OUT!":"HIDDEN. E TO LEAVE THE LOCKER.";
+}
 void update(float dt) {
     if(pressed[VK_F11]) toggleFullscreen();
     if(pressed[VK_ESCAPE]) {
@@ -467,9 +626,12 @@ void update(float dt) {
     pitch=std::clamp(pitch+(keys[VK_UP]-keys[VK_DOWN])*dt*1.2f,-1.32f,1.32f);
     if(pressed['F']) lamp=!lamp;
     if(pressed['M']) mapVisible=!mapVisible;
+    if(pressed['E'])useLocker();
+    if(hiddenLocker>=0){V3 out=lockerOut(lockers[hiddenLocker]);float base=std::atan2(-out.x,out.z);
+        yaw=base+std::clamp(angleDelta(yaw,base),-.65f,.65f);pitch=std::clamp(pitch,-.45f,.45f);}
     float front=float(keys['W']-keys['S']),side=float(keys['D']-keys['A']);
     V3 motion{std::sin(yaw)*front+std::cos(yaw)*side,0,-std::cos(yaw)*front+std::sin(yaw)*side};
-    bool moving=length(motion)>0.1f;
+    bool moving=hiddenLocker<0&&length(motion)>0.1f;
     if(stamina<=0.005f) exhausted=true; if(stamina>0.30f) exhausted=false;
     sprinting=keys[VK_SHIFT]&&moving&&!exhausted&&stamina>0;
     stamina=std::clamp(stamina+(sprinting?-0.18f:0.115f)*dt,0.0f,1.0f);
@@ -479,15 +641,14 @@ void update(float dt) {
     Tile pt=tile(player);
     for(int z=std::max(0,pt.z-3);z<=std::min(N-1,pt.z+3);++z)
         for(int x=std::max(0,pt.x-3);x<=std::min(N-1,pt.x+3);++x) explored[z][x]=true;
-    for(auto& n:notes) if(!n.taken&&distance2D(player,notePosition(n))<1.5f) {
+    for(auto& n:notes) if(hiddenLocker<0&&!n.taken&&distance2D(player,notePosition(n))<1.5f) {
         n.taken=true;++collected;notice=4;
         const char* topics[]={"MECHANICS","ELECTRODYNAMICS","OPTICS","THERMODYNAMICS","QUANTUM PHYSICS"};
         noticeText=collected==5?"ALL REPORTS FOUND! RETURN TO THE GREEN EXIT.":std::string("REPORT RECOVERED: ")+topics[collected-1];
     }
-    float d=distance2D(player,teacher);
-    bool seen=d<19 && lineOfSight(teacher,player);
-    bool heard=sprinting&&d<15;
-    if(seen||heard) { alert=7;target=pt; }
+    bool seen=hiddenLocker<0&&professorSees(player);
+    if(seen) { alert=7;target=pt;knownLocker=-1;lockerSearch=0; }
+    else if(knownLocker>=0){alert=7;target=lockers[knownLocker].tile;}
     else alert=std::max(0.0f,alert-dt);
     aiTick-=dt;
     if(aiTick<=0) {
@@ -503,9 +664,10 @@ void update(float dt) {
     V3 previousTeacher=teacher;
     if(gameTime>6) {
         float budget=(alert>0?3.15f+collected*0.06f:1.45f)*dt;
-        if(seen && clearWalkSegment(teacher,player)) {
+        V3 destination=knownLocker>=0?lockerApproach(lockers[knownLocker]):player;
+        if((seen||knownLocker>=0) && clearWalkSegment(teacher,destination)) {
             // Follow the exact position, including the edges of the same grid cell.
-            V3 delta=player-teacher;teacher=teacher+normalized(delta)*std::min(budget,length(delta));
+            V3 delta=destination-teacher;teacher=teacher+normalized(delta)*std::min(budget,length(delta));
             teacherPath.clear();
         } else while(budget>0&&!teacherPath.empty()) {
             V3 goal=center(teacherPath.front()),delta=goal-teacher;float distance=length(delta);
@@ -515,9 +677,77 @@ void update(float dt) {
             if(distance<=step+0.0001f){teacher=goal;teacherPath.erase(teacherPath.begin());}else break;
         }
     }
-    advanceProfessor(professorAnimation,previousTeacher,teacher,player,dt,alert>0);
-    if(gameTime>6&&caughtDuringStep(previousPlayer,player,previousTeacher,teacher)) { mode=Mode::Lost;captureMouse(false); }
-    else if(collected==5&&distance2D(player,center(exitTile))<1.1f) { mode=Mode::Won;captureMouse(false); }
+    advanceProfessor(professorAnimation,previousTeacher,teacher,player,dt,alert>0,seen);
+    bool opening=gameTime>6&&knownLocker>=0&&distance2D(teacher,lockerApproach(lockers[knownLocker]))<.15f;
+    if(opening){
+        lockerSearch+=dt;V3 out=lockerOut(lockers[knownLocker]);
+        float desired=std::atan2(-out.x,-out.z);
+        professorAnimation.facing+=std::clamp(angleDelta(desired,professorAnimation.facing),-dt*4.5f,dt*4.5f);
+        professorAnimation.reach=std::min(1.f,lockerSearch*2);
+    }
+    for(size_t i=0;i<lockers.size();++i){float goal=opening&&int(i)==knownLocker?smoothStep(.3f,1.4f,lockerSearch):0;
+        auto& door=lockers[i].door;door+=(goal-door)*(1-std::exp(-dt*7));}
+    if(opening&&lockerSearch>1.8f&&lockers[knownLocker].door>.90f){
+        if(hiddenLocker==knownLocker){mode=Mode::Lost;captureMouse(false);}
+        knownLocker=-1;lockerSearch=0;
+    }
+    if(hiddenLocker<0&&gameTime>6&&caughtDuringStep(previousPlayer,player,previousTeacher,teacher)) { mode=Mode::Lost;captureMouse(false); }
+    else if(hiddenLocker<0&&collected==5&&distance2D(player,center(exitTile))<1.1f) { mode=Mode::Won;captureMouse(false); }
+}
+
+void drawSkinnedRuntimeProfessor(V3 position,const ProfessorAnimation& animation) {
+    if(!runtimeProfessor.loaded||runtimeProfessor.clips.empty()||!runtimeVao) return;
+    auto findClip=[&](const char* name)->const RuntimeClip* {
+        for(const auto& candidate:runtimeProfessor.clips) if(candidate.name==name) return &candidate;
+        return nullptr;
+    };
+    const RuntimeClip* idleClip=findClip("Idle");
+    const RuntimeClip* walkClip=findClip("Walk");
+    const RuntimeClip* runClip=findClip("Run");
+    const RuntimeClip* catchClip=findClip("Catch");
+    if(!idleClip) idleClip=&runtimeProfessor.clips.front();
+    if(!walkClip) walkClip=idleClip;
+    if(!runClip) runClip=walkClip;
+    if(!catchClip) catchClip=idleClip;
+    const float idleFrame=animation.time*idleClip->fps;
+    const float walkFrame=animation.phase/(2*PI)*float(walkClip->frames-1);
+    const float runFrame=animation.phase/(2*PI)*float(runClip->frames-1);
+    const float locomotion=smoothStep(0,1,std::clamp(animation.blend,0.0f,1.0f));
+    const float catchFrame=animation.reach*float(catchClip->frames-1);
+    std::vector<SkinMatrix> pose(runtimeProfessor.boneCount);
+    for(uint32_t bone=0;bone<runtimeProfessor.boneCount;++bone) {
+        auto idle=sampleSkin(*idleClip,idleFrame,bone,runtimeProfessor.boneCount);
+        auto walk=sampleSkin(*walkClip,walkFrame,bone,runtimeProfessor.boneCount);
+        auto run=sampleSkin(*runClip,runFrame,bone,runtimeProfessor.boneCount);
+        pose[bone]=blendSkin(idle,blendSkin(walk,run,animation.runBlend),locomotion);
+    }
+    if(animation.reach>.001f&&runtimeProfessor.boneCount>=14){
+        // Keep the pelvis and feet in locomotion while the upper body reaches.
+        V3 chestBind{0,1.27f,0};
+        auto catchChest=sampleSkin(*catchClip,catchFrame,3,runtimeProfessor.boneCount,false);
+        V3 align=pose[3].apply(chestBind)-catchChest.apply(chestBind);
+        for(uint32_t bone=3;bone<14;++bone){
+            auto reaching=sampleSkin(*catchClip,catchFrame,bone,runtimeProfessor.boneCount,false);
+            reaching.m[3]+=align.x;reaching.m[7]+=align.y;reaching.m[11]+=align.z;
+            pose[bone]=blendSkin(pose[bone],reaching,smoothStep(0,.28f,animation.reach));
+        }
+    }
+    const float facing=animation.facing,c=std::cos(facing),s=std::sin(facing);
+    glUniform1i(locSkinEnabled,1);glUniform3f(locSkinOffset,position.x,position.y,position.z);
+    for(uint32_t bone=0;bone<runtimeProfessor.boneCount;++bone) {
+        SkinMatrix oriented=pose[bone];
+        for(int col=0;col<4;++col) {
+            oriented.m[col]=c*pose[bone].m[col]+s*pose[bone].m[8+col];
+            oriented.m[8+col]=-s*pose[bone].m[col]+c*pose[bone].m[8+col];
+        }
+        float matrix[16]{};
+        matrix[0]=oriented.m[0];matrix[4]=oriented.m[1];matrix[8]=oriented.m[2];matrix[12]=oriented.m[3];
+        matrix[1]=oriented.m[4];matrix[5]=oriented.m[5];matrix[9]=oriented.m[6];matrix[13]=oriented.m[7];
+        matrix[2]=oriented.m[8];matrix[6]=oriented.m[9];matrix[10]=oriented.m[10];matrix[14]=oriented.m[11];matrix[15]=1;
+        glUniformMatrix4fv(locBones[bone],1,GL_FALSE,matrix);
+    }
+    glBindVertexArray(runtimeVao);glDrawArrays(GL_TRIANGLES,0,GLsizei(runtimeProfessor.mesh.size()));
+    glUniform1i(locSkinEnabled,0);glUniform3f(locSkinOffset,0,0,0);glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
 }
 
 // Compact, deliberately pixel-style font, rendered as triangles in the core profile.
@@ -568,9 +798,10 @@ void drawUI() {
     text(ui,48,77,"REPORTS  "+std::to_string(collected)+" / 5",3,paper);
     rect(ui,28,697,288,75,ink);text(ui,47,712,exhausted?"CATCH YOUR BREATH":"STAMINA / SHIFT",1.8f,exhausted?amber:muted);
     rect(ui,47,743,249,7,{0.12f,0.20f,0.23f});rect(ui,47,743,249*stamina,7,exhausted?amber:mint);
-    text(ui,345,729,"F LIGHT   M MAP   ESC PAUSE",1.7f,muted);
+    text(ui,345,729,"E HIDE / LEAVE   F LIGHT   M MAP   ESC PAUSE",1.7f,muted);
     rect(ui,1074,26,178,65,ink);text(ui,1093,46,elapsed(),3,paper);
     if(playing) {
+        if(nearbyLocker()>=0){rect(ui,395,560,490,40,ink);text(ui,415,574,hiddenLocker>=0?"E LEAVE LOCKER":"E HIDE IN LOCKER",2,paper);}
         rect(ui,636,399,8,2,paper);rect(ui,639,396,2,8,paper);
         if(mapVisible) {
             float mx=1078,my=558,sz=8.2f;
@@ -601,7 +832,7 @@ void drawUI() {
         if(mode==Mode::Title) {
             text(ui,127,239,"ESCAPE FROM",6,paper);text(ui,127,303,"BIOPHYSICS",7,mint);
             text(ui,131,382,"THE LAST LAB IS OVER. THE PROFESSOR DISAGREES.",2,amber);
-            text(ui,131,422,"RECOVER 5 LAB REPORTS. GET BACK TO THE GREEN EXIT.\nWALK QUIETLY. SPRINTING CAN GIVE YOU AWAY.",2,paper);
+            text(ui,131,422,"RECOVER 5 LAB REPORTS. GET BACK TO THE GREEN EXIT.\nSTAY OUT OF SIGHT. E TO HIDE IN A LOCKER.",2,paper);
             text(ui,131,485,"WASD MOVE    MOUSE LOOK    SHIFT SPRINT\nF FLASHLIGHT    M MAP    F11 FULLSCREEN",2,muted);
             text(ui,131,567,"> ENTER TO BEGIN",3,mint);
             text(ui,814,578,"OPENGL 3.3 / C++17",1.7f,muted);
@@ -622,32 +853,41 @@ void drawUI() {
     }
     glDisable(GL_DEPTH_TEST);glUniform1i(locUI,1);Mat m=identity();glUniformMatrix4fv(locMatrix,1,GL_FALSE,m.m);drawMesh(ui);
 }
+#include "reports.h"
+
 void draw() {
+    beginSceneBuffer(screenW,screenH);
     glViewport(0,0,screenW,screenH);glClearColor(0.019f,0.035f,0.049f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-    glEnable(GL_DEPTH_TEST);glUseProgram(program);glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);glUniform1i(locUI,0);
-    bool moving=mode==Mode::Playing&&(keys['W']||keys['A']||keys['S']||keys['D']);
+    glEnable(GL_DEPTH_TEST);glUseProgram(program);glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);glUniform1i(locUI,0);glUniform1i(locSkinEnabled,0);glUniform3f(locSkinOffset,0,0,0);
+    bool moving=hiddenLocker<0&&mode==Mode::Playing&&(keys['W']||keys['A']||keys['S']||keys['D']);
     V3 eye=player+V3{0,1.66f+(moving?std::sin(footPhase)*0.027f:0),0};V3 dir=forward();
-    Mat m=perspective(72*PI/180,float(screenW)/screenH)*lookAt(eye,dir);
+    Mat projection=perspective(72*PI/180,float(screenW)/screenH),view=lookAt(eye,dir);
+    Mat m=projection*view;
+    glUniformMatrix4fv(locView,1,GL_FALSE,view.m);
     glUniformMatrix4fv(locMatrix,1,GL_FALSE,m.m);glUniform3f(locEye,eye.x,eye.y,eye.z);glUniform3f(locForward,dir.x,dir.y,dir.z);
     glUniform3f(locTeacher,teacher.x,teacher.y,teacher.z);
     auto lights=ceilingLights;std::sort(lights.begin(),lights.end(),[&](V3 a,V3 b){return dot(a-eye,a-eye)<dot(b-eye,b-eye);});
     int lightCount=std::min(12,int(lights.size()));glUniform1i(locLightCount,lightCount);
     for(int i=0;i<lightCount;++i)glUniform3f(locLights[i],lights[i].x,lights[i].y,lights[i].z);
-    glUniform1f(locLamp,lamp?1.0f:0.0f);
+    glUniform1f(locLamp,lamp&&hiddenLocker<0?1.0f:0.0f);
     glBindVertexArray(worldVao);glDrawArrays(GL_TRIANGLES,0,GLsizei(staticMesh.size()));
     glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
-    static Mesh dynamic;dynamic.clear();dynamic.reserve(400000);
+    static Mesh dynamic;dynamic.clear();dynamic.reserve(500000);
+    for(const auto& l:lockers)placeKit(dynamic,lockerKit(l.door),l.tile,l.wall);
     for(size_t i=0;i<notes.size();++i) if(!notes[i].taken) {
-        Mesh report;
-        materialBox(report,{0,1.55f,-1.52f},{0.32f,0.40f,0.035f},{0.31f,0.23f,0.11f},Wood);
-        materialBox(report,{0,1.55f,-1.48f},{0.28f,0.36f,0.004f},{1.10f,0.86f,0.40f},Plain);
-        for(int j=0;j<6;++j)materialBox(report,{0,1.30f+j*0.075f,-1.471f},{0.21f,0.005f,0.001f},{0.24f,0.20f,0.105f},Plain);
-        materialBox(report,{0,1.895f,-1.462f},{0.085f,0.025f,0.007f},{0.56f,0.53f,0.43f},Metal);
-        placeKit(dynamic,report,notes[i].tile,noteWall(notes[i].tile));
+        placeKit(dynamic,laboratoryReport(i),notes[i].tile,noteWall(notes[i].tile));
     }
     V3 toTeacher=teacher+V3{0,1,0}-eye;
-    if(dot(toTeacher,dir)>-2.0f)animateProfessor(dynamic,teacher,professorAnimation);
-    drawMesh(dynamic);drawUI();
+    bool professorVisible=dot(toTeacher,dir)>-2.0f;
+    if(runtimeProfessor.loaded) {
+        drawMesh(dynamic);
+        if(professorVisible) drawSkinnedRuntimeProfessor(teacher,professorAnimation);
+    } else {
+        if(professorVisible) animateProfessor(dynamic,teacher,professorAnimation);
+        drawMesh(dynamic);
+    }
+    compositeSSAO(projection);
+    glUseProgram(program);glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);glUniform1i(locSkinEnabled,0);glUniform3f(locSkinOffset,0,0,0);drawUI();
 }
 void screenshot(const std::string& path) {
     // Uncompressed BGR TGA; OpenGL's bottom-up rows match TGA's default origin.
@@ -701,6 +941,7 @@ void selfTest() {
     for(float dx:{-1.15f,0.0f,1.15f})for(float dz:{-1.15f,0.0f,1.15f}){
         makeMap(2026);mode=Mode::Playing;gameTime=7;alert=0;aiTick=0;collected=0;teacherPath.clear();
         teacher=center({9,9});player=teacher+V3{dx,0,dz};
+        professorAnimation={};professorAnimation.facing=std::atan2(-dx,-dz);
         for(int frame=0;frame<120&&mode==Mode::Playing;++frame)update(1.0f/60);
         require(mode==Mode::Lost,"Professor failed to catch an off-center player.");
     }
@@ -742,8 +983,61 @@ void selfTest() {
         if(frame%8==0){Mesh pose;animateProfessor(pose,{},a);for(const auto& v:pose){require(std::isfinite(v.p.y)&&std::isfinite(v.n.x),"Invalid animation vertex.");require(v.p.y>=-0.002f,"Animated shoe penetrates floor.");}}
     }
     ProfessorAnimation idle;advanceProfessor(idle,{},{},{1,0,0},1,false);require(idle.phase==0,"Idle animation advances the gait.");
-    ProfessorAnimation moving;advanceProfessor(moving,{},{0,0,-1.04f},{0,0,-2},1,true);require(std::abs(moving.phase-2*PI)<0.001f,"Gait is not distance synchronized.");
+    ProfessorAnimation moving;advanceProfessor(moving,{},{0,0,-ProfessorWalkStride*.5f},{0,0,-3},.5f,true);
+    require(std::abs(moving.phase-PI)<0.001f,"Gait is not distance synchronized.");
+    ProfessorAnimation chasing;advanceProfessor(chasing,{},{0,0,-3.15f},{0,0,-4.1f},1,true);
+    require(chasing.runBlend>.99f&&chasing.reach>.9f,"Chase does not blend into running and reaching.");
+    advanceProfessor(chasing,{},{},{0,0,-.8f},1,true,false);require(chasing.reach<.001f,"Professor reaches through an occluding wall.");
+    SkinMatrix a{{1,0,0,0,0,1,0,0,0,0,1,0}},b{{1,0,0,0,0,-1,0,0,0,0,-1,0}};
+    SkinMatrix half=blendSkin(a,b,.5f);require(std::abs(length(half.apply({0,1,0}))-1)<.0001f,"Rotation interpolation compresses limbs.");
+    RuntimeClip reaching;reaching.frames=2;reaching.matrices={a,b};
+    auto held=sampleSkin(reaching,10,0,1,false);require(std::abs(held.m[5]+1)<.0001f,"Reach restarts instead of holding its final pose.");
     log<<"PASS: wall contour coverage, exclusive decorations, report clearance, 48 IK poses, grounded feet, stationary gait.\n";
+    makeMap(2026);require(!lockers.empty(),"No hiding places generated.");
+    for(const auto& l:lockers){require(canStand(lockerApproach(l)),"Locker entrance is blocked.");require(!canStand(lockerPosition(l)),"Locker has no collision.");}
+    auto setupLocker=[&](bool spotted){
+        makeMap(2026);mode=Mode::Playing;gameTime=7;alert=0;aiTick=99;teacherPath.clear();professorAnimation={};
+        auto& l=lockers.front();V3 out=lockerOut(l);player=lockerApproach(l);teacher=center(l.tile)-out*.75f;
+        yaw=std::atan2(out.x,-out.z);pitch=0;
+        professorAnimation.facing=spotted?std::atan2(-out.x,-out.z):std::atan2(out.x,out.z);
+    };
+    setupLocker(false);require(!professorSees(player),"Professor sees behind his back.");
+    professorAnimation.facing+=PI;require(professorSees(player),"Professor misses a visible player.");
+    setupLocker(false);gameTime=0;keys['W']=keys[VK_SHIFT]=true;stamina=1;exhausted=false;update(.05f);
+    keys['W']=keys[VK_SHIFT]=false;require(alert==0,"Sprinting starts pursuit without visual detection.");
+    setupLocker(false);useLocker();require(hiddenLocker==0&&knownLocker==-1,"Unseen hiding was revealed.");
+    V3 hiddenPosition=player;teacher=lockerApproach(lockers[0]);keys['W']=true;
+    for(int i=0;i<40;++i)update(.05f);
+    keys['W']=false;require(mode==Mode::Playing&&alert==0&&distance2D(player,hiddenPosition)<.001f,"Safe hiding fails.");
+    useLocker();require(hiddenLocker==-1&&canStand(player),"Cannot leave locker safely.");
+    setupLocker(true);useLocker();require(knownLocker==0,"Witnessed hiding was forgotten.");
+    teacher=lockerApproach(lockers[0]);for(int i=0;i<10;++i)update(.05f);
+    require(mode==Mode::Playing&&lockerSearch>.4f,"Caught before opening locker.");
+    mode=Mode::Paused;float searchBefore=lockerSearch;update(.5f);require(lockerSearch==searchBefore,"Paused locker opening advances.");mode=Mode::Playing;
+    for(int i=0;i<35&&mode==Mode::Playing;++i)update(.05f);
+    require(mode==Mode::Lost&&lockers[0].door>.9f,"Professor does not open witnessed locker before capture.");
+    for(bool behindWall:{false,true}){
+        setupLocker(false);alert=4;
+        if(behindWall){
+            bool found=false;for(Tile t:openTiles)if(!lineOfSight(center(t),player)){
+                teacher=center(t);V3 delta=player-teacher;professorAnimation.facing=std::atan2(-delta.x,-delta.z);found=true;break;
+            }
+            require(found,"Missing occluded locker fixture.");
+        }
+        target=tile(teacher);Tile remembered=target;
+        require(!professorSees(player),"Unseen entry fixture is visible.");
+        useLocker();require(hiddenLocker==0&&knownLocker==-1&&target==remembered&&alert==4,"Pursuit reveals an unseen locker entry.");
+        teacher=lockerApproach(lockers[0]);
+        for(int i=0;i<40;++i)update(.05f);
+        require(mode==Mode::Playing&&knownLocker==-1&&lockerSearch==0&&lockers[0].door<.01f,"Professor opens an unwitnessed locker.");
+    }
+    setupLocker(true);alert=4;useLocker();require(knownLocker==0,"Witnessed entry during pursuit was forgotten.");
+    teacher=lockerApproach(lockers[0]);update(.2f);useLocker();player=center({8,9});
+    for(int i=0;i<45&&mode==Mode::Playing;++i)update(.05f);
+    require(mode==Mode::Playing&&knownLocker==-1,"Empty locker captures escaped player.");
+    makeMap(2026);require(hiddenLocker==-1&&knownLocker==-1&&lockerSearch==0,"Restart retains hiding state.");
+    log<<"PASS: vision cone, locker collision, unseen hiding, exit, witnessed search, opening before capture, pause and reset.\n";
+    log<<"PASS: active pursuit does not reveal locker entry behind a wall or outside the vision cone.\n";
     log.flush();
 }
 void exportProfessor() {
@@ -768,8 +1062,12 @@ void exportProfessor() {
 void shutdown() {
     captureMouse(false);
     if(renderContext) {
+        shutdownSSAO();
         glDeleteTextures(3,materialTextures);
         if(emblemTexture)glDeleteTextures(1,&emblemTexture);
+        if(reportTexture)glDeleteTextures(1,&reportTexture);
+        if(posterTexture)glDeleteTextures(1,&posterTexture);
+        if(runtimeVbo)glDeleteBuffers(1,&runtimeVbo);if(runtimeVao)glDeleteVertexArrays(1,&runtimeVao);
         if(worldVbo)glDeleteBuffers(1,&worldVbo);if(worldVao)glDeleteVertexArrays(1,&worldVao);
         if(vbo) glDeleteBuffers(1,&vbo);if(vao) glDeleteVertexArrays(1,&vao);if(program) glDeleteProgram(program);
         wglMakeCurrent(nullptr,nullptr);wglDeleteContext(renderContext);renderContext=nullptr;
@@ -782,10 +1080,14 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR args,int) {
     std::wstring cmd=args?args:L"";
     bool test=cmd.find(L"--self-test")!=std::wstring::npos;
     bool smoke=cmd.find(L"--smoke-test")!=std::wstring::npos;
+    ssaoEnabled=cmd.find(L"--no-ssao")==std::wstring::npos;
     try {
         if(test) { selfTest();return 0; }
         if(cmd.find(L"--export-model")!=std::wstring::npos){buildProfessor();exportProfessor();return 0;}
-        createWindowAndGL(smoke);initRenderer();buildProfessor();makeMap(currentSeed);buildWorld();
+        createWindowAndGL(smoke);buildProfessor();
+        require(loadRuntimeProfessor(),"Rigged professor asset missing: assets/models/teacher_runtime.bin");
+        initRenderer();
+        makeMap(currentSeed);buildWorld();
         yaw=walkable(2,1)?PI/2:PI;
         if(smoke) {
             GLint major=0,minor=0,profile=0;
@@ -805,12 +1107,39 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR args,int) {
             teacher=center({4,3});player=center({3,3});yaw=PI/2;pitch=-0.08f;professorAnimation.facing=PI/2;
             for(int frame=0;frame<12;++frame){professorAnimation.blend=1;professorAnimation.phase=frame*2*PI/12;professorAnimation.time=frame*0.1f;draw();screenshot("walk-"+std::to_string(frame)+".tga");}
             professorAnimation.blend=0;
-            player=center({2,3});yaw=PI/2;pitch=0.02f;alert=0;draw();screenshot("corridor.tga");
+            professorAnimation.reach=1;teacher=center({4,3});player=center({3,3});yaw=PI/2;pitch=-.10f;
+            draw();screenshot("reach.tga");
+            player=teacher+V3{-1.6f,0,-1.05f};yaw=std::atan2(1.6f,-1.05f);pitch=-.22f;
+            draw();screenshot("reach-side.tga");professorAnimation.reach=0;
+            player=center({2,3});yaw=PI/2;pitch=0.02f;alert=0;
+            ssaoEnabled=false;draw();screenshot("corridor-no-ssao.tga");
+            ssaoEnabled=true;draw();screenshot("corridor.tga");
+            std::vector<float> aoValues(size_t(aoWidth)*aoHeight);
+            glBindFramebuffer(Framebuffer,aoFbos[0]);glReadPixels(0,0,aoWidth,aoHeight,GL_RED,GL_FLOAT,aoValues.data());glBindFramebuffer(Framebuffer,0);
+            float minAO=1,meanAO=0;for(float value:aoValues){require(std::isfinite(value)&&value>=0&&value<=1.001f,"Invalid SSAO output.");minAO=std::min(minAO,value);meanAO+=value;}
+            meanAO/=float(aoValues.size());require(minAO<.92f&&meanAO>.35f,"SSAO is absent or over-darkened.");
+            {const Note& n=notes.front();Tile d=noteWall(n.tile);player=center(n.tile)+V3{float(d.x)*.58f,0,float(d.z)*.58f};
+             yaw=std::atan2(float(d.x),-float(d.z));pitch=-.09f;draw();screenshot("report.tga");}
             for(const auto& item:wallDecorations)if(item.kind==1){player=center(item.tile);yaw=std::atan2(float(item.direction.x),-float(item.direction.z));pitch=0.12f;draw();screenshot("poster.tga");break;}
             for(const auto& item:wallDecorations)if(item.kind==2){player=center(item.tile)-V3{float(item.direction.x),0,float(item.direction.z)}*.9f;yaw=std::atan2(float(item.direction.x),-float(item.direction.z));pitch=-.02f;draw();screenshot("door.tga");break;}
             player=center({8,9});yaw=PI/2;pitch=0.02f;draw();screenshot("hall.tga");
+            require(!lockers.empty(),"Missing locker render fixture.");
+            {auto& l=lockers.front();V3 out=lockerOut(l);
+             player=center(l.tile)-out*.65f;teacher=center({9,9});yaw=std::atan2(out.x,-out.z);pitch=-.25f;alert=0;
+             draw();screenshot("locker.tga");
+             player=lockerApproach(l);useLocker();l.door=0;draw();screenshot("locker-hidden.tga");
+             knownLocker=hiddenLocker;teacher=lockerApproach(l);professorAnimation.facing=std::atan2(-out.x,-out.z);teacherPath.clear();
+             for(int i=0;i<28;++i)update(.05f);
+             require(mode==Mode::Playing&&l.door>.6f,"Locker opening render did not advance.");
+             draw();screenshot("locker-opening.tga");
+             hiddenLocker=knownLocker=-1;lockerSearch=0;alert=0;notice=0;l.door=0;
+             player=center({8,9});teacher=center({4,3});yaw=PI/2;pitch=.02f;}
             require(glGetError()==GL_NO_ERROR,"OpenGL reported an error.");
             std::ofstream log("smoke-test.log");log<<"PASS: shaders, buffers, world, HUD, screenshots; OpenGL "<<glGetString(GL_VERSION)<<"\nGPU: "<<glGetString(GL_RENDERER)<<"\n";
+            log<<"SSAO: min="<<minAO<<", mean="<<meanAO<<", half resolution, bilateral blur, ambient-only composite\n";
+            {int w=screenW,h=screenH;screenW=1001;screenH=633;draw();require(postWidth==1001&&aoWidth==501,"SSAO resize failed.");
+             screenW=1;screenH=1;draw();require(aoWidth==1&&aoHeight==1,"SSAO minimized size failed.");
+             screenW=w;screenH=h;draw();require(glGetError()==GL_NO_ERROR,"SSAO resize produced GL errors.");}
             glFinish();auto start=std::chrono::steady_clock::now();
             for(int i=0;i<12;++i){draw();glFinish();}
             log<<"Mean render time, 1280x800, 12 frames: "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/12<<" ms\n";
